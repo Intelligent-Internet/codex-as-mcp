@@ -7,8 +7,9 @@ import shutil
 import platform
 from typing import List, Dict, Optional, Sequence
 
-# Global safe mode setting
+# Global settings
 SAFE_MODE = True
+MODEL = "gpt-5-codex"
 
 mcp = FastMCP("codex-as-mcp")
 
@@ -208,6 +209,7 @@ async def codex_execute(prompt: str, work_dir: str, ctx: Context) -> str:
     """
     cmd = [
         "codex", "exec",
+        f"--model {MODEL}",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
         "--cd", work_dir,
@@ -320,6 +322,7 @@ async def codex_review(review_type: str, work_dir: str, target: str = "", prompt
     
     cmd = [
         "codex", "exec",
+        f"--model {MODEL}",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
         "--cd", work_dir,
@@ -348,7 +351,7 @@ async def codex_review(review_type: str, work_dir: str, target: str = "", prompt
 
 def main():
     """Entry point for the MCP server"""
-    global SAFE_MODE
+    global SAFE_MODE, MODEL
 
     # Get version from package metadata
     try:
@@ -367,9 +370,15 @@ def main():
         version=f"%(prog)s {version}"
     )
     parser.add_argument(
-        "--yolo", 
+        "--yolo",
         action="store_true",
         help="Enable writable mode (allows file modifications, git operations, etc.)"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="gpt-5-codex",
+        help="Name of the model to use (Default is gpt-5-codex)"
     )
     parser.add_argument(
         "--help-modes",
@@ -404,12 +413,17 @@ and conflicting system modifications. Sequential execution is safer.
     
     # Set safe mode based on --yolo flag
     SAFE_MODE = not args.yolo
-    
+
+    # Set model from command line argument
+    MODEL = args.model
+
     if SAFE_MODE:
         print("[SAFE] Running in SAFE mode (read-only). Use --yolo for writable mode.")
     else:
         print("[WRITABLE] Running in WRITABLE mode. Codex can modify files and system state.")
-    
+
+    print(f"Using model: {MODEL}")
+
     mcp.run()
 
 
