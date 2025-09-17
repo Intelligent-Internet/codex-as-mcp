@@ -209,7 +209,8 @@ async def codex_execute(prompt: str, work_dir: str, ctx: Context) -> str:
     """
     cmd = [
         "codex", "exec",
-        f"--model {MODEL}",
+        "--model",
+        f"{MODEL}",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
         "--cd", work_dir,
