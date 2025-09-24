@@ -10,6 +10,8 @@ from typing import List, Dict, Optional, Sequence
 # Global settings
 SAFE_MODE = True
 MODEL = "gpt-5-codex"
+MODEL_REASONING_EFFORT = None
+SEARCH_ENABLED = False
 
 mcp = FastMCP("codex-as-mcp")
 
@@ -207,15 +209,27 @@ async def codex_execute(prompt: str, work_dir: str, ctx: Context) -> str:
         work_dir (str): The working directory, e.g. /Users/kevin/Projects/demo_project
         ctx (Context): MCP context for logging
     """
-    cmd = [
-        "codex", "exec",
-        "--model",
-        f"{MODEL}",
+    cmd = ["codex"]
+
+    # Add search flag if enabled (before exec subcommand)
+    if SEARCH_ENABLED:
+        cmd.append("--search")
+
+    # Add model (before exec subcommand)
+    cmd.extend(["--model", f"{MODEL}"])
+
+    # Add model reasoning effort if specified (using -c flag)
+    if MODEL_REASONING_EFFORT:
+        cmd.extend(["-c", f'model_reasoning_effort="{MODEL_REASONING_EFFORT}"'])
+
+    # Add exec subcommand and remaining arguments
+    cmd.extend([
+        "exec",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
         "--cd", work_dir,
         prompt,
-    ]
+    ])
     
     try:
         blocks = run_and_extract_codex_blocks(cmd, safe_mode=SAFE_MODE)
@@ -321,14 +335,27 @@ async def codex_review(review_type: str, work_dir: str, target: str = "", prompt
         custom_prompt=f"\n{custom_prompt_section}" if custom_prompt_section else ""
     )
     
-    cmd = [
-        "codex", "exec",
-        f"--model {MODEL}",
+    cmd = ["codex"]
+
+    # Add search flag if enabled (before exec subcommand)
+    if SEARCH_ENABLED:
+        cmd.append("--search")
+
+    # Add model (before exec subcommand)
+    cmd.extend(["--model", f"{MODEL}"])
+
+    # Add model reasoning effort if specified (using -c flag)
+    if MODEL_REASONING_EFFORT:
+        cmd.extend(["-c", f'model_reasoning_effort="{MODEL_REASONING_EFFORT}"'])
+
+    # Add exec subcommand and remaining arguments
+    cmd.extend([
+        "exec",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
         "--cd", work_dir,
         final_prompt,
-    ]
+    ])
     
     try:
         blocks = run_and_extract_codex_blocks(cmd, safe_mode=SAFE_MODE)
@@ -352,7 +379,7 @@ async def codex_review(review_type: str, work_dir: str, target: str = "", prompt
 
 def main():
     """Entry point for the MCP server"""
-    global SAFE_MODE, MODEL
+    global SAFE_MODE, MODEL, MODEL_REASONING_EFFORT, SEARCH_ENABLED
 
     # Get version from package metadata
     try:
@@ -382,8 +409,20 @@ def main():
         help="Name of the model to use (Default is gpt-5-codex)"
     )
     parser.add_argument(
+        "--model_reasoning_effort",
+        type=str,
+        choices=["low", "medium", "high"],
+        default=None,
+        help="Model reasoning effort level (low, medium, high)"
+    )
+    parser.add_argument(
+        "--search",
+        action="store_true",
+        help="Enable search functionality in codex"
+    )
+    parser.add_argument(
         "--help-modes",
-        action="store_true", 
+        action="store_true",
         help="Show detailed explanation of safe vs writable modes"
     )
     
@@ -418,12 +457,24 @@ and conflicting system modifications. Sequential execution is safer.
     # Set model from command line argument
     MODEL = args.model
 
+    # Set model reasoning effort from command line argument
+    MODEL_REASONING_EFFORT = args.model_reasoning_effort
+
+    # Set search enabled from command line argument
+    SEARCH_ENABLED = args.search
+
     if SAFE_MODE:
         print("[SAFE] Running in SAFE mode (read-only). Use --yolo for writable mode.")
     else:
         print("[WRITABLE] Running in WRITABLE mode. Codex can modify files and system state.")
 
     print(f"Using model: {MODEL}")
+
+    if MODEL_REASONING_EFFORT:
+        print(f"Model reasoning effort: {MODEL_REASONING_EFFORT}")
+
+    if SEARCH_ENABLED:
+        print("Search functionality: enabled")
 
     mcp.run()
 
