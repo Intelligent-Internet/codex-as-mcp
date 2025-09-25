@@ -5,6 +5,7 @@ import argparse
 import sys
 import shutil
 import platform
+import os
 from typing import List, Dict, Optional, Sequence
 
 # Global settings
@@ -16,27 +17,121 @@ SEARCH_ENABLED = False
 mcp = FastMCP("codex-as-mcp")
 
 HEADER_RE = re.compile(
-    r'^'
-    r'\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\]'   # 1: timestamp
-    r'\s+'
-    r'([^\n]+)'                                    # 2: tag (整行，允许包含空格/冒号)
-    r'\n',
-    flags=re.M
+    r"^"
+    r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\]"  # 1: timestamp
+    r"\s+"
+    r"([^\n]+)"  # 2: tag (整行，允许包含空格/冒号)
+    r"\n",
+    flags=re.M,
 )
 
 BLOCK_RE = re.compile(
-    r'^'
-    r'\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\]\s+([^\n]+)\n'  # 1: ts, 2: tag
-    r'(.*?)'                                                   # 3: body
-    r'(?=^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\]\s+[^\n]+\n|\Z)',
-    flags=re.M | re.S
+    r"^"
+    r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\]\s+([^\n]+)\n"  # 1: ts, 2: tag
+    r"(.*?)"  # 3: body
+    r"(?=^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\]\s+[^\n]+\n|\Z)",
+    flags=re.M | re.S,
 )
+
+# Track directories that have been initialized
+INITIALIZED_DIRECTORIES = set()
+
+AGENT_MD_CONTENT = """1. USER INSTRUCTION MUST FOLLOW:
+# Context Management
+- codex_context.md will contain all details about previous step and keep the context of whole conversation.
+- Before you do any task you have to make sure you read codex_context.md before you solve the task.
+- After finish the task you MUST summarize all details following this format to codex_context.md file.
+```xml
+<task_number>
+[The task number of the task]
+<state_snapshot>
+    <overall_goal>
+        [Single concise sentence describing the task's high-level objective]
+    </overall_goal>
+
+    <key_knowledge>
+        [Bullet points of crucial facts, conventions, and constraints]
+        - Technical stack and frameworks being used
+        - Important configuration or setup details
+        - Key decisions made during the task
+        - User preferences and requirements
+    </key_knowledge>
+
+    <file_system_state>
+        [List of files created/modified/deleted with their status]
+        - Current working directory
+        - Files read and key findings
+        - Files modified and nature of changes
+        - Files created and their purpose
+    </file_system_state>
+
+    <recent_actions>
+        [Summary of last few significant actions and outcomes]
+        - Commands executed and results
+        - Tests run and their status
+        - Debugging steps taken
+        - Solutions implemented
+    </recent_actions>
+
+    <errors_and_warnings>
+        [Any unresolved errors or important warnings]
+        - Error messages encountered
+        - Potential issues identified
+        - Warnings to keep in mind
+    </errors_and_warnings>
+
+</state_snapshot>
+</task_number>
+```
+
+Because this file will keep over whole conversation, do not OVERWRITE you need to APPEND to codex_context.md
+
+# Deployment:
+- After done a task related to website building you MUST use: bun run dev to deploy and testing before handover.
+- You have accessed to playwright MCP to use browing tool, you must use these tool to test full website before you complete.
+"""
+
+
+def initialize_directory_files(work_dir: str) -> None:
+    """
+    Create AGENTS.md and codex_context.md files in the working directory if they don't exist
+    and this is the first time the tool is called for this directory.
+    """
+    global INITIALIZED_DIRECTORIES
+
+    # Check if this directory has already been initialized
+    if work_dir in INITIALIZED_DIRECTORIES:
+        return
+
+    # Mark this directory as initialized
+    INITIALIZED_DIRECTORIES.add(work_dir)
+
+    # Create AGENTS.md if it doesn't exist
+    agents_file = os.path.join(work_dir, "AGENTS.md")
+    if not os.path.exists(agents_file):
+        try:
+            with open(agents_file, "w") as f:
+                f.write(AGENT_MD_CONTENT)
+        except Exception as e:
+            # Log but don't fail the main operation
+            print(f"Warning: Could not create AGENTS.md: {e}")
+
+    # Create codex_context.md if it doesn't exist
+    contexts_file = os.path.join(work_dir, "codex_context.md")
+    if not os.path.exists(contexts_file):
+        try:
+            with open(contexts_file, "w") as f:
+                f.write("")  # Create empty file
+        except Exception as e:
+            # Log but don't fail the main operation
+            print(f"Warning: Could not create codex_context.md: {e}")
+
 
 def run_and_extract_codex_blocks(
     cmd: Sequence[str],
     tags: Optional[Sequence[str]] = ("codex",),
     last_n: int = 1,
-    safe_mode: bool = True
+    safe_mode: bool = True,
 ) -> List[Dict[str, str]]:
     """
     运行命令并抽取日志块。每个块由形如
@@ -70,19 +165,23 @@ def run_and_extract_codex_blocks(
                 error_msg += "Please install Codex CLI: npm install -g @openai/codex"
             raise FileNotFoundError(error_msg)
         final_cmd[0] = codex_executable
-    
+
     # Modify command based on safe mode
     if safe_mode:
         # Replace --dangerously-bypass-approvals-and-sandbox with read-only mode
         if "--dangerously-bypass-approvals-and-sandbox" in final_cmd:
             idx = final_cmd.index("--dangerously-bypass-approvals-and-sandbox")
-            final_cmd[idx:idx+1] = ["--sandbox", "read-only"]
-    
+            final_cmd[idx : idx + 1] = ["--sandbox", "read-only"]
+
     proc = subprocess.run(
-        final_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False
+        final_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
     )
     out = proc.stdout
-    
+
     # Check for non-zero exit code and raise with captured output
     if proc.returncode != 0:
         error = subprocess.CalledProcessError(proc.returncode, final_cmd, output=out)
@@ -93,15 +192,19 @@ def run_and_extract_codex_blocks(
     for m in BLOCK_RE.finditer(out):
         ts, tag, body = m.group(1), m.group(2).strip(), m.group(3)
         if tags is None or tag.lower() in {t.lower() for t in tags}:
-            raw = f'[{ts}] {tag}\n{body}'
+            raw = f"[{ts}] {tag}\n{body}"
             blocks.append({"timestamp": ts, "tag": tag, "body": body, "raw": raw})
 
     if not blocks:
         # Include command and output snippet for debugging
         cmd_str = " ".join(final_cmd)
-        output_preview = (out[:200] + "..." if len(out) > 200 else out) if out else "(no output)"
-        raise ValueError(f"No matching codex blocks found in command output.\nCommand: {cmd_str}\nOutput preview: {output_preview}")
-    
+        output_preview = (
+            (out[:200] + "..." if len(out) > 200 else out) if out else "(no output)"
+        )
+        raise ValueError(
+            f"No matching codex blocks found in command output.\nCommand: {cmd_str}\nOutput preview: {output_preview}"
+        )
+
     # 只取最后 1 个
     return blocks[-last_n:]
 
@@ -122,7 +225,6 @@ Files to review: {target}
 {custom_prompt}
 
 Please provide detailed feedback with specific suggestions for improvement.""",
-
     "staged": """You are an expert code reviewer. Please review the staged changes (git diff --cached) that are ready to be committed.
 
 Focus on:
@@ -136,7 +238,6 @@ Focus on:
 {custom_prompt}
 
 Please provide feedback on whether these changes are ready for commit and any improvements needed.""",
-
     "unstaged": """You are an expert code reviewer. Please review the unstaged changes (git diff) in the working directory.
 
 Focus on:
@@ -149,7 +250,6 @@ Focus on:
 {custom_prompt}
 
 Please provide feedback on the current changes and what should be addressed before committing.""",
-
     "changes": """You are an expert code reviewer. Please review the git changes in the specified commit range.
 
 Focus on:
@@ -165,7 +265,6 @@ Commit range: {target}
 {custom_prompt}
 
 Please provide comprehensive feedback on these changes.""",
-
     "pr": """You are an expert code reviewer. Please conduct a comprehensive pull request review.
 
 Focus on:
@@ -182,7 +281,6 @@ Pull Request: {target}
 {custom_prompt}
 
 Please provide detailed review feedback suitable for a pull request review.""",
-
     "general": """You are an expert code reviewer. Please conduct a general code review of the codebase.
 
 Focus on:
@@ -195,7 +293,7 @@ Focus on:
 
 {custom_prompt}
 
-Please provide a comprehensive review with prioritized recommendations."""
+Please provide a comprehensive review with prioritized recommendations.""",
 }
 
 
@@ -209,6 +307,9 @@ async def codex_execute(prompt: str, work_dir: str, ctx: Context) -> str:
         work_dir (str): The working directory, e.g. /Users/kevin/Projects/demo_project
         ctx (Context): MCP context for logging
     """
+    # Initialize AGENTS.md and codex_context.md on first call to this directory
+    initialize_directory_files(work_dir)
+
     cmd = ["codex"]
 
     # Add search flag if enabled (before exec subcommand)
@@ -223,14 +324,17 @@ async def codex_execute(prompt: str, work_dir: str, ctx: Context) -> str:
         cmd.extend(["-c", f'model_reasoning_effort="{MODEL_REASONING_EFFORT}"'])
 
     # Add exec subcommand and remaining arguments
-    cmd.extend([
-        "exec",
-        "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--cd", work_dir,
-        prompt,
-    ])
-    
+    cmd.extend(
+        [
+            "exec",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--cd",
+            work_dir,
+            prompt,
+        ]
+    )
+
     try:
         blocks = run_and_extract_codex_blocks(cmd, safe_mode=SAFE_MODE)
         # Defensive check for empty blocks
@@ -243,19 +347,25 @@ async def codex_execute(prompt: str, work_dir: str, ctx: Context) -> str:
         return f"Error: {str(e)}"
     except subprocess.CalledProcessError as e:
         # Include output for better debugging
-        output = e.output if hasattr(e, 'output') else (e.stderr or "")
+        output = e.output if hasattr(e, "output") else (e.stderr or "")
         return f"Error executing codex command: {e}\nOutput: {output}"
-    except IndexError as e:
+    except IndexError:
         return "Error: No codex output blocks found (list index out of range)"
     except Exception as e:
         return f"Unexpected error: {str(e)}"
 
 
 @mcp.tool()
-async def codex_review(review_type: str, work_dir: str, target: str = "", prompt: str = "", ctx: Context = None) -> str:
+async def codex_review(
+    review_type: str,
+    work_dir: str,
+    target: str = "",
+    prompt: str = "",
+    ctx: Context = None,
+) -> str:
     """
     Execute code review using codex with pre-defined review prompts for different scenarios.
-    
+
     This tool provides specialized code review capabilities for various development scenarios,
     combining pre-defined review templates with custom instructions.
 
@@ -264,40 +374,40 @@ async def codex_review(review_type: str, work_dir: str, target: str = "", prompt
             - "files": Review specific files for code quality, bugs, and best practices
                        Target: comma-separated file paths (e.g., "src/main.py,src/utils.py")
                        Example: review_type="files", target="src/auth.py,src/db.py"
-            
+
             - "staged": Review staged changes (git diff --cached) ready for commit
                        Target: not needed (automatically detects staged changes)
                        Example: review_type="staged"
-            
+
             - "unstaged": Review unstaged changes (git diff) in working directory
                          Target: not needed (automatically detects unstaged changes)
                          Example: review_type="unstaged"
-            
+
             - "changes": Review specific commit range or git changes
                         Target: git commit range (e.g., "HEAD~3..HEAD", "main..feature-branch")
                         Example: review_type="changes", target="HEAD~2..HEAD"
-            
+
             - "pr": Review pull request changes comprehensively
                    Target: pull request number or identifier
                    Example: review_type="pr", target="123"
-            
+
             - "general": General codebase review for architecture and quality
                         Target: optional, can specify scope or leave empty for full codebase
                         Example: review_type="general", target="src/"
 
         work_dir (str): The working directory path (e.g., "/Users/kevin/Projects/demo_project")
-        
+
         target (str, optional): Target specification based on review_type:
             - For "files": comma-separated file paths
             - For "staged"/"unstaged": not needed (leave empty)
             - For "changes": git commit range (commit1..commit2)
             - For "pr": pull request number/identifier
             - For "general": optional scope (directory path or leave empty)
-        
+
         prompt (str, optional): Additional custom instructions to append to the review prompt.
                                Use this to specify particular aspects to focus on or additional context.
                                Example: "Focus on security vulnerabilities and performance"
-        
+
         ctx (Context, optional): MCP context for logging
 
     Returns:
@@ -306,35 +416,40 @@ async def codex_review(review_type: str, work_dir: str, target: str = "", prompt
     Examples:
         # Review specific files with security focus
         codex_review("files", "/path/to/project", "src/auth.py,src/api.py", "Focus on security vulnerabilities")
-        
+
         # Review staged changes before commit
         codex_review("staged", "/path/to/project")
-        
+
         # Review unstaged work-in-progress changes
         codex_review("unstaged", "/path/to/project", "", "Check for incomplete implementations")
-        
+
         # Review recent commits
         codex_review("changes", "/path/to/project", "HEAD~3..HEAD", "Look for performance regressions")
-        
+
         # Review pull request
         codex_review("pr", "/path/to/project", "456", "Focus on test coverage")
-        
+
         # General codebase review
         codex_review("general", "/path/to/project", "src/", "Identify technical debt")
     """
+    # Initialize AGENTS.md and codex_context.md on first call to this directory
+    initialize_directory_files(work_dir)
+
     if review_type not in REVIEW_PROMPTS:
-        raise ValueError(f"Invalid review_type '{review_type}'. Must be one of: {list(REVIEW_PROMPTS.keys())}")
-    
+        raise ValueError(
+            f"Invalid review_type '{review_type}'. Must be one of: {list(REVIEW_PROMPTS.keys())}"
+        )
+
     # Get the appropriate review prompt template
     template = REVIEW_PROMPTS[review_type]
-    
+
     # Format the template with target and custom prompt
     custom_prompt_section = f"Additional instructions: {prompt}" if prompt else ""
     final_prompt = template.format(
         target=target if target else "current scope",
-        custom_prompt=f"\n{custom_prompt_section}" if custom_prompt_section else ""
+        custom_prompt=f"\n{custom_prompt_section}" if custom_prompt_section else "",
     )
-    
+
     cmd = ["codex"]
 
     # Add search flag if enabled (before exec subcommand)
@@ -349,14 +464,17 @@ async def codex_review(review_type: str, work_dir: str, target: str = "", prompt
         cmd.extend(["-c", f'model_reasoning_effort="{MODEL_REASONING_EFFORT}"'])
 
     # Add exec subcommand and remaining arguments
-    cmd.extend([
-        "exec",
-        "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--cd", work_dir,
-        final_prompt,
-    ])
-    
+    cmd.extend(
+        [
+            "exec",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--cd",
+            work_dir,
+            final_prompt,
+        ]
+    )
+
     try:
         blocks = run_and_extract_codex_blocks(cmd, safe_mode=SAFE_MODE)
         # Defensive check for empty blocks
@@ -369,9 +487,9 @@ async def codex_review(review_type: str, work_dir: str, target: str = "", prompt
         return f"Error: {str(e)}"
     except subprocess.CalledProcessError as e:
         # Include output for better debugging
-        output = e.output if hasattr(e, 'output') else (e.stderr or "")
+        output = e.output if hasattr(e, "output") else (e.stderr or "")
         return f"Error executing codex command: {e}\nOutput: {output}"
-    except IndexError as e:
+    except IndexError:
         return "Error: No codex output blocks found (list index out of range)"
     except Exception as e:
         return f"Unexpected error: {str(e)}"
@@ -384,52 +502,48 @@ def main():
     # Get version from package metadata
     try:
         import importlib.metadata
+
         version = importlib.metadata.version("codex-as-mcp")
     except Exception:
         version = "unknown"
 
     parser = argparse.ArgumentParser(
         prog="codex-as-mcp",
-        description=f"MCP server that provides codex agent tools (version {version})"
+        description=f"MCP server that provides codex agent tools (version {version})",
     )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {version}"
-    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version}")
     parser.add_argument(
         "--yolo",
         action="store_true",
-        help="Enable writable mode (allows file modifications, git operations, etc.)"
+        help="Enable writable mode (allows file modifications, git operations, etc.)",
     )
     parser.add_argument(
         "--model",
         type=str,
         default="gpt-5-codex",
-        help="Name of the model to use (Default is gpt-5-codex)"
+        help="Name of the model to use (Default is gpt-5-codex)",
     )
     parser.add_argument(
         "--model_reasoning_effort",
         type=str,
         choices=["low", "medium", "high"],
         default=None,
-        help="Model reasoning effort level (low, medium, high)"
+        help="Model reasoning effort level (low, medium, high)",
     )
     parser.add_argument(
-        "--search",
-        action="store_true",
-        help="Enable search functionality in codex"
+        "--search", action="store_true", help="Enable search functionality in codex"
     )
     parser.add_argument(
         "--help-modes",
         action="store_true",
-        help="Show detailed explanation of safe vs writable modes"
+        help="Show detailed explanation of safe vs writable modes",
     )
-    
+
     args = parser.parse_args()
-    
+
     if args.help_modes:
-        print("""
+        print(
+            """
 Codex-as-MCP Execution Modes:
 
 [SAFE] Safe Mode (default):
@@ -448,9 +562,10 @@ Why Sequential Execution?
 Codex is an agent that modifies files and system state. Running multiple
 instances in parallel could cause file conflicts, git race conditions,
 and conflicting system modifications. Sequential execution is safer.
-""")
+"""
+        )
         sys.exit(0)
-    
+
     # Set safe mode based on --yolo flag
     SAFE_MODE = not args.yolo
 
@@ -466,7 +581,9 @@ and conflicting system modifications. Sequential execution is safer.
     if SAFE_MODE:
         print("[SAFE] Running in SAFE mode (read-only). Use --yolo for writable mode.")
     else:
-        print("[WRITABLE] Running in WRITABLE mode. Codex can modify files and system state.")
+        print(
+            "[WRITABLE] Running in WRITABLE mode. Codex can modify files and system state."
+        )
 
     print(f"Using model: {MODEL}")
 
