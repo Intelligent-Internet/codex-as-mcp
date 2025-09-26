@@ -1,4 +1,6 @@
 from mcp.server.fastmcp import FastMCP, Context
+import asyncio
+from functools import partial
 import subprocess
 import re
 import argparse
@@ -336,7 +338,11 @@ async def codex_execute(prompt: str, work_dir: str, ctx: Context) -> str:
     )
 
     try:
-        blocks = run_and_extract_codex_blocks(cmd, safe_mode=SAFE_MODE)
+        loop = asyncio.get_event_loop()
+        blocks = await loop.run_in_executor(
+            None,
+            partial(run_and_extract_codex_blocks, cmd, safe_mode=SAFE_MODE),
+        )
         # Defensive check for empty blocks
         if not blocks:
             return "Error: No codex output blocks found"
@@ -476,7 +482,11 @@ async def codex_review(
     )
 
     try:
-        blocks = run_and_extract_codex_blocks(cmd, safe_mode=SAFE_MODE)
+        loop = asyncio.get_event_loop()
+        blocks = await loop.run_in_executor(
+            None,
+            partial(run_and_extract_codex_blocks, cmd, safe_mode=SAFE_MODE)
+        )
         # Defensive check for empty blocks
         if not blocks:
             return "Error: No codex output blocks found"
